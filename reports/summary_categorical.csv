@@ -1,0 +1,5 @@
+column,count,missing,unique,top_values
+species,344,0,3,Adelie (152); Gentoo (124); Chinstrap (68)
+island,344,0,3,Biscoe (168); Dream (124); Torgersen (52)
+sex,344,39,2,MALE (155); FEMALE (150)
+island_group,344,38,3,West (148); East (109); North (49)

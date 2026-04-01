@@ -1,0 +1,15 @@
+{
+  "outcome": "body_mass_g",
+  "predictors": [
+    "flipper_length_mm",
+    "bill_depth_mm"
+  ],
+  "n_rows_used": 309,
+  "r_squared": 0.7558597239228642,
+  "adj_r_squared": 0.7542640358439286,
+  "coefficients": {
+    "flipper_length_mm": 51.42766315356649,
+    "bill_depth_mm": 27.87019500986719
+  },
+  "intercept": -6608.309429588421
+}

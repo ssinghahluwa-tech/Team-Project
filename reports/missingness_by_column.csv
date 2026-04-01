@@ -1,0 +1,9 @@
+column,missing_rate,missing_count
+sex,0.11337209302325581,39
+island_group,0.11046511627906977,38
+bill_length_mm,0.10174418604651163,35
+body_mass_g,0.05813953488372093,20
+flipper_length_mm,0.04941860465116279,17
+bill_depth_mm,0.005813953488372093,2
+species,0.0,0
+island,0.0,0

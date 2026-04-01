@@ -1,0 +1,36 @@
+{
+  "n_rows": 344,
+  "n_cols": 8,
+  "columns": [
+    "species",
+    "island",
+    "bill_length_mm",
+    "bill_depth_mm",
+    "flipper_length_mm",
+    "body_mass_g",
+    "sex",
+    "island_group"
+  ],
+  "dtypes": {
+    "species": "str",
+    "island": "str",
+    "bill_length_mm": "float64",
+    "bill_depth_mm": "float64",
+    "flipper_length_mm": "float64",
+    "body_mass_g": "float64",
+    "sex": "str",
+    "island_group": "str"
+  },
+  "n_missing_total": 151,
+  "missing_by_col": {
+    "species": 0,
+    "island": 0,
+    "bill_length_mm": 35,
+    "bill_depth_mm": 2,
+    "flipper_length_mm": 17,
+    "body_mass_g": 20,
+    "sex": 39,
+    "island_group": 38
+  },
+  "memory_mb": 0.08050155639648438
+}
