@@ -1,0 +1,17 @@
+=== COMMAND ===
+/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 reports/build3_generated_analysis.py --data data/McDonalds_Financial_Statements_Monthly_2005-2024.csv --report_dir reports
+
+=== STDOUT ===
+(empty)
+
+=== STDERR ===
+/Users/sumerahluwalia/Library/Mobile Documents/com~apple~CloudDocs/Team Project/reports/build3_generated_analysis.py:17: ChainedAssignmentError: A value is being set on a copy of a DataFrame or Series through chained assignment using an inplace method.
+Such inplace method never works to update the original DataFrame or Series, because the intermediate object on which we are setting values always behaves as a copy (due to Copy-on-Write).
+
+For example, when doing 'df[col].method(value, inplace=True)', try using 'df.method({col: value}, inplace=True)' instead, to perform the operation inplace on the original object, or try to avoid an inplace operation using 'df[col] = df[col].method(value)'.
+
+See the documentation for a more detailed explanation: https://pandas.pydata.org/pandas-docs/stable/user_guide/copy_on_write.html
+  df['Revenue ($B)'].fillna(df['Revenue ($B)'].mean(), inplace=True)
+
+=== RETURN CODE ===
+0

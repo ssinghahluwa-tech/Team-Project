@@ -1,44 +1,33 @@
 """
-build3: HITL + Router (Tool Routing + Optional CodeGen/Execute)
-+ Langfuse tracing (LangChain callbacks + observe decorator)
+build3: Human-in-the-loop data analysis agent with tool routing, code generation,
+and Langfuse tracing.
 
-THis build adds a top-level ROUTER that decides whether to:
-    (A) run one of the Build0 tools, OR
-    (B) fall back to CodeGen + optional Execute (subprocess).
+Purpose:
+This application allows users to analyze tabular datasets using:
+1) Predefined Build0 tools (structured analyses)
+2) LLM-generated Python code (custom analyses)
 
-It adds a single main command:
-    ask <request>   (router decides tool vs codegen)
+The agent uses a router to decide whether to:
+(A) run a tool, OR
+(B) generate code
 
-Keeps power-user commands:
-    tool <request>  (force tool mode)
-    code <request>  (force codegen mode)
-    run             (execute last approved code)
+All executions require human approval (HITL).
 
-You will need the expected Build0 tool registry (tools.py in the updated src folder)
+Main Features:
+- Schema-aware (uses only dataset columns)
+- Tool routing
+- Codegen fallback
+- Artifact saving
+- Optional memory + streaming
+- Langfuse tracing
 
-Each tool function should accept (df, report_dir, **kwargs) and return either:
-- a string, OR
-- a dict with a "text" field (+ optional "artifact_paths"), OR
-- a tuple (text, artifact_paths)
-
-To run this script, you will need to make sure you have the most updated src and requirements.txt file
-from the course repository.
-
-Then, in the terminal or command line, run:
-  python builds/build3_hitl_router_agent.py --data data/penguins.csv --report_dir reports --tags build3 --memory
-
-  To stream LLM output, add the --stream flag to the command above
-
-To interact with the agent, use the following commands:
-    help                         Show this help text
-    schema                       Print dataset schema
-    suggest <question>           Questions about the dataset or analysis (LLM)
-    ask <request>                ROUTER decides: tool-run OR codegen (HITL)
-    tool <request>               Force tool-run: choose one Build0 tool + args (HITL)
-    code <request>               Force code generation (HITL) + approve to save
-    run                          Execute last approved script via subprocess (HITL)
-    exit                         Quit
+Commands:
+    ask <request>   → router decides tool vs codegen
+    tool <request>  → force tool mode
+    code <request>  → force codegen
+    run             → execute approved code
 """
+
 
 from __future__ import annotations
 
@@ -46,6 +35,7 @@ import argparse
 import importlib
 import inspect
 import json
+import os
 import re
 import subprocess
 import sys
@@ -105,6 +95,24 @@ from src import ensure_dirs, read_data, basic_profile  # noqa: E402
 # --------------------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------------------
+ToolFn = Callable[..., Any]
+
+CODE_BLOCK_RE = re.compile(r"```python\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+
+
+@dataclass
+class ToolResult:
+    name: str
+    artifact_paths: list[str]
+    text: str
+
+
+def require_openai_key() -> None:
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError(
+            "OPENAI_API_KEY not found. Add it to your .env file before running this script."
+        )
 
 
 def setup_artifact_dirs(report_dir: Path) -> tuple[Path, Path]:
@@ -134,7 +142,6 @@ def inject_artifact_paths(
     sig = inspect.signature(tool_fn)
     params = sig.parameters
 
-    # Common directory-style params across your tools
     dir_param_candidates = {
         "fig_dir": tool_figure_dir,
         "plot_dir": tool_figure_dir,
@@ -151,14 +158,9 @@ def inject_artifact_paths(
         if p in params and p not in args:
             args[p] = default_dir
 
-    # Common single-file “output path” parameters (optional but helpful)
-    # Only set if the tool takes it AND it wasn't provided.
     file_param_candidates = ["out_path", "output_path", "save_path", "path"]
     for p in file_param_candidates:
         if p in params and p not in args:
-            # Choose an extension that won’t break most tools; many plotting funcs accept .png
-            # and table funcs often accept .csv/.json. If tool needs a specific ext, it should
-            # set its own default or the router can pass it explicitly.
             default_path = tool_output_dir / f"{tool_name}_output"
             args[p] = default_path
 
@@ -184,18 +186,11 @@ def profile_to_schema_text(profile: dict) -> str:
     return "\n".join(lines)
 
 
-# Regexes to extract fenced code blocks and JSON blocks from LLM output (best-effort, for flexibility in formatting)
-CODE_BLOCK_RE = re.compile(r"```python\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
-JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
-
-
 def extract_python_code(text: str) -> Optional[str]:
     m = CODE_BLOCK_RE.search(text or "")
     return m.group(1).strip() if m else None
 
 
-# This is a best-effort split of the LLM response into PLAN / CODE / VERIFY sections,
-# based on simple substring searches.
 def split_sections(text: str) -> Tuple[str, str, str]:
     """Split an LLM response into PLAN / CODE / VERIFY sections (best-effort)."""
     if not text:
@@ -254,8 +249,6 @@ def parse_json_object(raw: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    # Fallback: parse between the first '{' and last '}'.
-    # This helps with model outputs that include extra pre/post text.
     i = raw.find("{")
     j = raw.rfind("}")
     if i != -1 and j != -1 and j > i:
@@ -349,9 +342,6 @@ def make_langfuse_config(session_id: str, tags: list[str]) -> Dict[str, Any]:
 # --------------------------------------------------------------------------------------
 # Build0 tool registry loader
 # --------------------------------------------------------------------------------------
-ToolFn = Callable[..., Any]
-
-
 def load_tools() -> Dict[str, ToolFn]:
     """
     Load TOOLS registry from your Build0 codebase.
@@ -458,13 +448,6 @@ def format_tool_arg_hints(tools: Dict[str, ToolFn], allowed_tools: list[str]) ->
     return "\n".join(lines)
 
 
-@dataclass
-class ToolResult:
-    name: str
-    artifact_paths: list[str]
-    text: str
-
-
 def normalize_tool_return(tool_name: str, result: Any) -> ToolResult:
     """
     Normalize tool returns into ToolResult.
@@ -481,7 +464,7 @@ def normalize_tool_return(tool_name: str, result: Any) -> ToolResult:
         return ToolResult(name=tool_name, artifact_paths=[], text=result)
 
     if isinstance(result, dict):
-        text = str(result.get("text", ""))
+        text = json.dumps(result, indent=2, default=str)
         artifact_paths = result.get("artifact_paths", []) or []
         if not isinstance(artifact_paths, list):
             artifact_paths = [str(artifact_paths)]
@@ -511,10 +494,11 @@ def build_suggest_chain(
     llm = ChatOpenAI(model=model, temperature=temperature, streaming=stream)
     system_text = (
         "You are a data analysis assistant.\n"
-        "You ONLY see the dataset schema (columns + dtypes). Do NOT invent columns.\n\n"
+        "You ONLY see dataset schema (columns + types).\n"
+        "Do NOT invent columns.\n\n"
         "Return:\n"
-        "1) 2-3 plausible research questions (bulleted)\n"
-        "2) For each: outcome(s), predictor(s), and suggested analysis type\n"
+        "1) 2-3 useful research questions\n"
+        "2) For each: outcome, predictors, analysis type\n"
         "3) 5-7 clarifying questions\n"
     )
 
@@ -556,26 +540,24 @@ def build_codegen_chain(
 ):
     llm = ChatOpenAI(model=model, temperature=temperature, streaming=stream)
     system_text = (
-        "You are a careful Python data analysis code generator.\n"
-        "IMPORTANT RULES:\n"
-        "- You ONLY know the dataset schema. Do NOT invent columns.\n"
-        "- Produce ONE Python script that can run as a standalone file.\n"
-        "- The script MUST:\n"
-        "  (1) use argparse with --data and --report_dir\n"
-        "  (2) read the CSV at --data with pandas\n"
-        "  (3) handle missing values explicitly\n"
-        "  (4) If missing data are present, use listwise deletion unless specified otherwise\n"
-        "  (4) save at least ONE artifact into --report_dir\n"
-        "  (5) validate referenced columns exist (exit nonzero if not)\n\n"
-        "OUTPUT FORMAT (exactly):\n"
+        "You are a careful Python data analysis code generator.\n\n"
+        "You ONLY know the dataset schema. Do NOT invent columns.\n\n"
+        "The script must:\n"
+        "1) Use argparse (--data, --report_dir)\n"
+        "2) Load data using pandas\n"
+        "3) Validate column names\n"
+        "4) Handle missing values\n"
+        "5) Save at least one output (CSV or plot)\n"
+        "6) Be clean and readable\n\n"
+        "OUTPUT FORMAT:\n"
         "PLAN:\n"
-        "- ...\n\n"
+        "- steps\n\n"
         "CODE:\n"
         "```python\n"
         "# full script\n"
         "```\n\n"
         "VERIFY:\n"
-        "- ...\n"
+        "- checks\n"
     )
 
     if memory:
@@ -665,39 +647,40 @@ def build_router_chain(
     Decide whether to use a Build0 tool or fall back to CodeGen.
 
     Outputs ONLY valid JSON:
-    {
+    {{
       "mode": "tool" | "codegen",
-      "tool": "<toolname>",         # required if mode=="tool"
-      "args": { ... },              # required if mode=="tool"
-      "code_request": "<string>",   # required if mode=="codegen"
+      "tool": "<toolname>",
+      "args": {{ ... }},
+      "code_request": "<string>",
       "note": "short rationale"
-    }
+    }}
     """
     llm = ChatOpenAI(model=model, temperature=temperature, streaming=stream)
     allow_str = format_capability_hints(allowed_tools, tool_descriptions)
 
     system_text = (
-        "You are a careful router for a human-in-the-loop data analysis CLI.\n"
-        "You ONLY see dataset schema (columns + dtypes) and an allow-list of tools.\n\n"
-        "Goal: Choose TOOL mode whenever a tool can satisfy the request.\n"
-        "Choose CODEGEN mode only when no available tool can satisfy the request.\n\n"
-        f"Allow-list tools:\n{allow_str}\n\n"
-        f"Tool argument names by signature:\n{tool_arg_hints}\n\n"
-        "OUTPUT JSON ONLY (no markdown, no commentary):\n"
+        "You are a careful router for a human-in-the-loop data analysis agent.\n"
+        "You are given ONLY the dataset schema (columns + dtypes) and a list of available tools.\n\n"
+        "Your job is to decide whether to:\n"
+        "1) Use a tool (preferred when possible), OR\n"
+        "2) Use code generation (only if no tool can handle the request)\n\n"
+        "IMPORTANT RULES:\n"
+        "- ALWAYS prefer tools if possible\n"
+        "- ONLY use codegen if no tool fits\n"
+        "- NEVER invent columns\n"
+        "- ONLY use columns in schema\n"
+        "- Tool args MUST match function parameters\n\n"
+        "- If a tool requires arguments and none are provided, infer reasonable defaults from the schema (e.g., use all numeric columns for summarize_numeric)\n"
+        f"Available tools:\n{allow_str}\n\n"
+        f"Tool argument names:\n{tool_arg_hints}\n\n"
+        "OUTPUT JSON ONLY:\n"
         "{{\n"
         '  "mode": "tool" | "codegen",\n'
         '  "tool": "<toolname>",\n'
         '  "args": {{ ... }},\n'
         '  "code_request": "<string>",\n'
-        '  "note": "short rationale"\n'
-        "}}\n\n"
-        "Rules:\n"
-        "- If mode=='tool': tool must be in allow-list; args should be minimal and safe.\n"
-        "- If mode=='tool': args keys MUST match the selected tool's parameter names.\n"
-        "- Never use generic keys like 'column' unless that exact parameter exists.\n"
-        "- If mode=='codegen': set code_request to a concrete coding request.\n"
-        "- If request asks for an analysis and no such tool exists in the allow-list, choose codegen.\n"
-        "- Never invent columns.\n"
+        '  "note": "short explanation"\n'
+        "}}\n"
     )
 
     prompt = ChatPromptTemplate.from_messages(
@@ -862,13 +845,8 @@ def traced_run_tool(
     tool_args: Dict[str, Any],
     tags: list[str],
 ) -> ToolResult:
-    # --- Standard artifact folders (always present) ---
-    tool_output_dir = report_dir / "tool_outputs"
-    tool_figure_dir = report_dir / "tool_figures"
-    tool_output_dir.mkdir(parents=True, exist_ok=True)
-    tool_figure_dir.mkdir(parents=True, exist_ok=True)
+    tool_output_dir, tool_figure_dir = setup_artifact_dirs(report_dir)
 
-    # --- Signature inspection (once) ---
     try:
         sig = inspect.signature(tool_fn)
         params = sig.parameters
@@ -876,36 +854,31 @@ def traced_run_tool(
             p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
         )
     except (TypeError, ValueError):
-        sig = None
         params = {}
-        accepts_kwargs = True  # safest fallback
+        accepts_kwargs = True
 
-    # --- Inject dirs into tool_args if the tool supports them and they're missing ---
-    # Your plotting tools in src/plotting.py typically take fig_dir; keep this flexible.
-    dir_defaults = {
-        # figures
-        "fig_dir": tool_figure_dir,
-        "plot_dir": tool_figure_dir,
-        "plots_dir": tool_figure_dir,
-        "figure_dir": tool_figure_dir,
-        "figures_dir": tool_figure_dir,
-        # outputs
-        "out_dir": tool_output_dir,
-        "output_dir": tool_output_dir,
-        "artifact_dir": tool_output_dir,
-        # NOTE: we still pass report_dir separately below for tools that support it
-    }
+    tool_args = inject_artifact_paths(
+        tool_fn=tool_fn,
+        tool_name=tool_name,
+        args=tool_args,
+        tool_output_dir=tool_output_dir,
+        tool_figure_dir=tool_figure_dir,
+    )
+        # Avoid passing report_dir twice
+    if "report_dir" in tool_args:
+        tool_args.pop("report_dir")
 
-    for k, default_path in dir_defaults.items():
-        if k not in tool_args and (k in params or accepts_kwargs):
-            tool_args[k] = default_path
+    for k, v in list(tool_args.items()):
+        if isinstance(v, str) and (
+            k.endswith("_dir")
+            or k.endswith("_path")
+            or k in {"report_dir", "fig_dir", "plot_dir", "out_dir", "output_dir"}
+        ):
+            try:
+                tool_args[k] = Path(v)
+            except Exception:
+                pass
 
-    # Normalize string paths → Path objects (helps if router emitted strings)
-    for k in list(tool_args.keys()):
-        if k in dir_defaults and isinstance(tool_args[k], str):
-            tool_args[k] = Path(tool_args[k])
-
-    # --- Trace + execute ---
     with propagate_attributes(
         tags=tags + ["build", "toolrun"],
         metadata={
@@ -913,7 +886,6 @@ def traced_run_tool(
             "args": json.dumps(tool_args, ensure_ascii=False, default=str),
         },
     ):
-        # Preserve your existing "report_dir if supported" behavior
         supports_report_dir = ("report_dir" in params) or accepts_kwargs
 
         if supports_report_dir:
@@ -926,6 +898,7 @@ def traced_run_tool(
         print("Outputs saved to:", tool_output_dir)
         print("Figures saved to:", tool_figure_dir)
         print()
+        print_artifact_summary(tool_output_dir, tool_figure_dir)
 
         return normalize_tool_return(tool_name, result)
 
@@ -1186,7 +1159,6 @@ def do_router(
     if mode == "codegen":
         code_req = (plan.get("code_request") or "").strip()
         if not code_req:
-            # fallback: just use the original request
             code_req = req
         do_codegen(
             req=code_req,
@@ -1225,25 +1197,28 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    require_openai_key()
+
     tag_list = parse_tags(args.tags)
 
     data_path = Path(args.data)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {data_path}")
+
     report_dir = Path(args.report_dir)
     ensure_dirs(report_dir)
     ensure_dirs(report_dir / "tool_outputs")
+    ensure_dirs(report_dir / "tool_figures")
 
-    # Load data + schema
     df = read_data(data_path)
     df_columns = set(df.columns)
     schema_text = profile_to_schema_text(basic_profile(df))
 
-    # Load Build0 tools registry
     tools = load_tools()
     allowed_tools = sorted(tools.keys())
     tool_descriptions = load_tool_descriptions()
     tool_arg_hints = format_tool_arg_hints(tools, allowed_tools)
 
-    # Chains
     suggest_chain = build_suggest_chain(
         args.model, args.temperature, args.stream, args.memory
     )
@@ -1271,10 +1246,11 @@ def main() -> None:
     )
 
     base_config = make_langfuse_config(session_id=args.session_id, tags=tag_list)
-
     script_path = report_dir / args.out_file
 
     print("\n=== build3: HITL + Router ===\n")
+    print(f"Dataset: {data_path}")
+    print(f"Rows: {df.shape[0]} | Columns: {df.shape[1]}")
     print(f"Tags: {tag_list}")
     print(f"Build0 tools loaded: {', '.join(allowed_tools)}\n")
 

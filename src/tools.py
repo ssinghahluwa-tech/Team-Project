@@ -6,6 +6,8 @@ import src.modeling as modeling
 import src.plotting as plotting
 import src.profiling as profiling
 import src.summaries as summaries
+import src.time_series as time_series
+
 
 # src/tools.py
 
@@ -18,6 +20,8 @@ TOOLS = {
     # profiling
     "basic_profile": profiling.basic_profile,
     "split_columns": profiling.split_columns,
+    # time series
+    "grouped_summary": time_series.grouped_summary,
     # modeling
     "multiple_linear_regression": modeling.multiple_linear_regression,
     # plotting
@@ -38,4 +42,5 @@ TOOLS = {
 TOOL_DESCRIPTIONS = {
     "plot_bar_charts": "Bar chart of category counts for categorical columns (NOT associations with numeric variables).",
     "plot_cat_num_boxplot": "Boxplot showing the distribution of a numeric variable grouped by a categorical variable (categorical–numeric association).",
+    "grouped_summary": "Summarize a numeric column by category using count, mean, median, min, and max.",
 }
